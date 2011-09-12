@@ -3,27 +3,66 @@ var http = require('http'),
 
 // Simplfied context
 var context = {
-  errors:[],  
+  testsPending:0,
+  testsExecuted:[],
+  results:{
+    executed:0,
+    succeeded:0,
+    failed:0
+  },  
   
-  hasError:function() {
-    return this.errors.length > 0
+  startTest:function() {
+    this.testsPending += 1;
   },
   
-  assertEquals:function(arg1, arg2) {
-    if (arg1 !== arg2)
+  finishTest:function(testSuite, currentTest, err) {
+    var suite = this.testsExecuted[testSuite];
+    
+    if (!suite)
     {
-      this.errors.push(['Equality test failed', arg1, '!==', arg2].join(' '))
-      return false;
+      suite = {name:testSuite.name,tests:[]};
+      this.testsExecuted[testSuite.name] = suite;      
     }
     
-    return false;
+    suite.tests.push({test:currentTest.name,passed:!err ? "Success" : "Failed",error:err});
+    this.results.executed += 1;
+    
+    if (err) { 
+      this.results.failed += 1;
+    } else {
+      this.results.succeeded += 1;
+    }
+    
+    this.testsPending -= 1;
+  },
+  
+  logResults:function() {
+    for (suite in this.testsExecuted) {
+      this.logInfo(["Suite:",suite]);
+      this.logInfo("Tests:")
+      var tests = this.testsExecuted[suite].tests;
+      for (var i = 0; i < tests.length; ++i) {
+        var test = tests[i];
+        this.logInfo(["\t",test.passed,'--',test.test])
+        if (test.error) {
+          var message = test.error.message;
+          
+          // should puts the whole object being tested into the AssertionError without setting the actual or expected values.
+          // todo: remove this temporary hack
+          if (message.indexOf("{") >= 0) {
+            this.logInfo(["\t","\t","Expected object", message.slice(message.lastIndexOf('}') + 2)]);
+          } else {
+            this.logInfo(["\t","\t","Expected object", message]);
+          }
+          
+        }
+      }
+    }
+
+    this.logInfo(context.results);
   },
   
   logInfo:function(msg) {
-    console.log(this.isArray(msg) ? msg.join(' ') : msg);
-  },
-  
-  logError:function(msg) {
     console.log(this.isArray(msg) ? msg.join(' ') : msg);
   },
   
@@ -43,69 +82,71 @@ var context = {
 }
 
 // Modules to be tested, these will be loaded from the configured path to test definition files
-var updateInquiries = {
-  name:"My test",
-  description:"test",
+var rentals = {
+  name:"Rentals",
+  description:"Test rentals resource",
   resource:{
-    host:"myhost",
+    host:"www.tripadvisor.com",
     port:80,
     method:"POST",
-    url:"myurl",
-    headers:{"content-type":"application/json"}
+    url:"/api/vacationrentals/rentals/60745?key=e05d1e33-e5ee-44c1-a161-440b42a93325",
+    headers:{}
   },
-  requests:[{data:'data'},{data:'data'}],
-  tests:{
-    testOne:function(responses, context) {
-      return context.assertEquals(responses[0].statusCode, 400, this);
+  tests:[
+    {
+      name: "Test rentals in Boston",
+      data:{},
+      callback: function(response, data, context) {
+        response.should.have.property('statusCode', 200);
+        data.should.be.a('object');
+        data.should.have.property('name','Boston')
+      }
     }
-  }
+  ]
 }
 
-var modules = [];
-modules.push(updateInquiries);
+var testSuites = [];
+testSuites.push(rentals);
 
 // Node test main driver
-(function(modules, context) {
-    /** Responses generated from requests */
-    responses = [];
-    
+(function(testSuites, context) {
     /**
-     * Run over all modules provided executing in step:
-     * 1. Make requests for each request defined in the module storing the results
-     * 2. Run tests over responses
+     * Run over all test suites provided executing in step:
+     * 1. Run each defined test in the suite, calling the remote resource and preparing the result
+     * 2. Execute callbacks defined for each test as the response is ready
      * 3. Wrap up with final steps and clean up.
      */
-    run = function(modules, context) {
-      for (var i = 0; i < modules.length; ++i) {
-        var module = modules[i];
-        context.logInfo(["Running test module", module.name]);
-        this.requests(module.resource, module.requests, context);
-        this.test(module.tests, context);
-        this.finish(context);
+    run = function(testSuites, context) {
+      for (var i = 0; i < testSuites.length; ++i) {
+        var testSuite = testSuites[i];
+        context.logInfo(["Running test suite --", testSuite.name]);
+        this.test(testSuite, context);
       }
     };
     
     /**
-     * Runs through all requests defined in the module, listening for and caching the response
+     * Runs through all test defined in the suite, listening for and caching the response and 
+     * executing the test.
      */
-    requests = function(resource, requests, context) {
-      var clientResponses = [];
-      
-      for (var i = 0; i < requests.length; ++i) {        
-        var request = context.coalesce([requests[i], resource]);
-        var headers = request('headers');
+    test = function(testSuite, context) {      
+      for (var i = 0; i < testSuite.tests.length; ++i) {
+        context.startTest();
+        var currentTest = testSuite.tests[i]
+        var test = context.coalesce([currentTest, testSuite.resource]);
+        context.logInfo(["Running test --", test('name')]);
         
+        var headers = test('headers');
         if (!headers['host']) {
-          headers['host'] = request('host');
+          headers['host'] = test('host');
         }
         
-        var client = http.createClient(request('port'), request('host'));
-        var clientRequest = client.request(request('method'), request('url'), headers);
+        var client = http.createClient(test('port'), test('host'));
+        var clientRequest = client.request(test('method'), test('url'), headers);
         
-        clientRequest.end(JSON.stringify(request('data')));        
+        context.logInfo(["Issuing request to resource found at",test('host'),test('url')]);
+        clientRequest.end(JSON.stringify(test('data')));
         
         clientRequest.on('response', function (clientResponse) {
-          clientResponses.push(clientResponse);
           clientResponse.setEncoding('utf8');
           var statusCode = clientResponse.statusCode;
           var headers = JSON.stringify(clientResponse.headers);
@@ -116,23 +157,22 @@ modules.push(updateInquiries);
           });          
           
           clientResponse.on('end', function() {
-            console.log('test')
-            clientResponses.push('test')
+            context.logInfo(["Executing callback for test --", currentTest.name]);
+            try {
+              test('callback')(clientResponse, JSON.parse(data), context);
+              context.finishTest(testSuite, currentTest, null);
+            } catch (error) {
+              context.finishTest(testSuite, currentTest, error);
+            }
+            
+            if (context.testsPending == 0)
+            {
+              context.logResults();
+            }
           });
         });
       }
-      console.log(clientResponses);
     };
     
-    /**
-     * Runs through the gamut of defined tests for the module
-     */
-    test = function(tests, responses, context) { };
-    
-    /**
-     * Finalize and cleanup
-     */
-     finish = function(context) { };
-    
-    run(modules, context);
-}(modules, context));
+    run(testSuites, context);
+}(testSuites, context));
