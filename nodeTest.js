@@ -99,7 +99,10 @@ var rentals = {
       callback: function(response, data, context) {
         response.should.have.property('statusCode', 200);
         data.should.be.a('object');
-        data.should.have.property('name','Boston')
+        data.should.have.property('locationId', 60745);
+        data.should.have.property('name','Boston');
+        data.should.have.property('rentalCount').above(10);
+        
       }
     }
   ]
